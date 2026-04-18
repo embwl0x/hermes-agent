@@ -976,7 +976,7 @@ class TestRunJobSkillBacked:
         assert error is None
         assert final_response == "ok"
 
-    def test_run_job_loads_skill_and_disables_recursive_cron_tools(self, tmp_path):
+    def test_run_job_loads_skill_and_disables_recursive_cron_and_mcp_preload_tools(self, tmp_path):
         job = {
             "id": "skill-job",
             "name": "skill test",
@@ -1013,6 +1013,7 @@ class TestRunJobSkillBacked:
 
         kwargs = mock_agent_cls.call_args.kwargs
         assert "cronjob" in (kwargs["disabled_toolsets"] or [])
+        assert "no_mcp" in (kwargs["disabled_toolsets"] or [])
 
         prompt_arg = mock_agent.run_conversation.call_args.args[0]
         assert "blogwatcher" in prompt_arg
