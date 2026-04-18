@@ -3831,6 +3831,39 @@ class AIAgent:
 
         return "\n\n".join(p.strip() for p in prompt_parts if p.strip())
 
+    def _ensure_discovery_prompt_hints(self, prompt: str) -> str:
+        """Append lazy discovery hints to reused prompts when tool config changes."""
+        prompt = prompt or ""
+        additions: List[str] = []
+
+        has_skills_tools = any(
+            name in self.valid_tool_names for name in ['skills_list', 'skill_view', 'skill_manage']
+        )
+        if (
+            has_skills_tools
+            and not self._skills_index_in_prompt
+            and "full skills index is not preloaded" not in prompt
+        ):
+            additions.append(
+                "Skills are available through skills_list and skill_view, but the full skills index is not preloaded. "
+                "For specialized tasks, unfamiliar domains, or workflows that may have local instructions, call skills_list first, "
+                "then skill_view for the relevant skill before using it."
+            )
+
+        has_mcp_bridge_tools = any(name in self.valid_tool_names for name in ['mcp_list_tools', 'mcp_call_tool'])
+        if has_mcp_bridge_tools and "MCP servers are available on demand" not in prompt:
+            additions.append(
+                "MCP servers are available on demand through mcp_list_tools and mcp_call_tool, but MCP server schemas are not preloaded. "
+                "For MCP-specific tasks, external integrations, or capabilities not covered by the visible tools, call mcp_list_tools first, "
+                "then mcp_call_tool for the exact MCP tool you need."
+            )
+
+        if not additions:
+            return prompt
+        if prompt.strip():
+            return prompt.rstrip() + "\n\n" + "\n\n".join(additions)
+        return "\n\n".join(additions)
+
     # =========================================================================
     # Pre/post-call guardrails (inspired by PR #1321 — @alireza78a)
     # =========================================================================
@@ -8828,6 +8861,15 @@ class AIAgent:
                         self._session_db.update_system_prompt(self.session_id, self._cached_system_prompt)
                     except Exception as e:
                         logger.debug("Session DB update_system_prompt failed: %s", e)
+
+        refreshed_prompt = self._ensure_discovery_prompt_hints(self._cached_system_prompt or "")
+        if refreshed_prompt != self._cached_system_prompt:
+            self._cached_system_prompt = refreshed_prompt
+            if self._session_db:
+                try:
+                    self._session_db.update_system_prompt(self.session_id, self._cached_system_prompt)
+                except Exception as e:
+                    logger.debug("Session DB update_system_prompt after discovery hints failed: %s", e)
 
         active_system_prompt = self._cached_system_prompt
 

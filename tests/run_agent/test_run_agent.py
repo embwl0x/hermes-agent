@@ -823,6 +823,38 @@ class TestBuildSystemPrompt:
         assert {"skills_list", "skill_view", "skill_manage"} <= agent.valid_tool_names
         assert "full skills index is not preloaded" in prompt
 
+    def test_reused_prompt_gets_missing_lazy_discovery_hints(self):
+        tools = _make_tool_defs(
+            "skills_list",
+            "skill_view",
+            "skill_manage",
+            "mcp_list_tools",
+            "mcp_call_tool",
+        )
+
+        with (
+            patch("run_agent.get_tool_definitions", return_value=tools),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch(
+                "hermes_cli.config.load_config",
+                return_value={"agent": {"skills_index_in_prompt": False}},
+            ),
+            patch("run_agent.OpenAI"),
+        ):
+            agent = AIAgent(
+                api_key="test-k...7890",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+        refreshed = agent._ensure_discovery_prompt_hints("Existing stored prompt")
+
+        assert "Existing stored prompt" in refreshed
+        assert "full skills index is not preloaded" in refreshed
+        assert "MCP servers are available on demand" in refreshed
+        assert agent._ensure_discovery_prompt_hints(refreshed) == refreshed
+
     def test_install_repo_cwd_uses_profile_workspace_for_context(self, tmp_path, monkeypatch):
         workspace = tmp_path / "workspace"
         workspace.mkdir()
