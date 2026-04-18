@@ -26,6 +26,11 @@ def test_get_platform_tools_uses_default_when_platform_not_configured():
 def test_configurable_toolsets_include_messaging():
     assert any(ts_key == "messaging" for ts_key, _, _ in CONFIGURABLE_TOOLSETS)
 
+
+def test_configurable_toolsets_include_mcp_bridge():
+    assert any(ts_key == "mcp" for ts_key, _, _ in CONFIGURABLE_TOOLSETS)
+
+
 def test_get_platform_tools_default_telegram_includes_messaging():
     enabled = _get_platform_tools({}, "telegram")
 
@@ -111,6 +116,23 @@ def test_get_platform_tools_no_mcp_sentinel_excludes_all_mcp_servers():
     assert "terminal" in enabled
     assert "exa" not in enabled
     assert "web-search-prime" not in enabled
+    assert "no_mcp" not in enabled
+
+
+def test_get_platform_tools_no_mcp_sentinel_keeps_mcp_bridge_when_selected():
+    """The bridge toolset can stay enabled while external MCP schemas stay lazy."""
+    config = {
+        "platform_toolsets": {"cli": ["web", "mcp", "no_mcp"]},
+        "mcp_servers": {
+            "exa": {"url": "https://mcp.exa.ai/mcp"},
+        },
+    }
+
+    enabled = _get_platform_tools(config, "cli")
+
+    assert "web" in enabled
+    assert "mcp" in enabled
+    assert "exa" not in enabled
     assert "no_mcp" not in enabled
 
 
