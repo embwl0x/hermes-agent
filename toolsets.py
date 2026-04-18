@@ -39,6 +39,8 @@ _HERMES_CORE_TOOLS = [
     "vision_analyze", "image_generate",
     # Skills
     "skills_list", "skill_view", "skill_manage",
+    # On-demand MCP bridge
+    "mcp_list_tools", "mcp_call_tool",
     # Browser automation
     "browser_navigate", "browser_snapshot", "browser_click",
     "browser_type", "browser_scroll", "browser_back",
@@ -106,6 +108,12 @@ TOOLSETS = {
     "skills": {
         "description": "Access, create, edit, and manage skill documents with specialized instructions and knowledge",
         "tools": ["skills_list", "skill_view", "skill_manage"],
+        "includes": []
+    },
+
+    "mcp": {
+        "description": "On-demand MCP bridge. Lists and calls MCP tools only when needed, without preloading MCP server schemas.",
+        "tools": ["mcp_list_tools", "mcp_call_tool"],
         "includes": []
     },
     

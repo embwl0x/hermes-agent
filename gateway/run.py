@@ -251,17 +251,37 @@ except Exception:
 os.environ["HERMES_QUIET"] = "1"
 
 # Enable interactive exec approval for dangerous commands on messaging platforms
-os.environ["HERMES_EXEC_ASK"] = "1"
+# unless approvals.mode is off.
+_approvals_cfg = (_cfg if '_cfg' in dir() else {}).get("approvals", {})
+_approval_mode = _approvals_cfg.get("mode", "manual") if isinstance(_approvals_cfg, dict) else "manual"
+if isinstance(_approval_mode, bool):
+    _approval_mode = "off" if _approval_mode is False else "manual"
+if str(_approval_mode).strip().lower() == "off":
+    os.environ.pop("HERMES_EXEC_ASK", None)
+else:
+    os.environ["HERMES_EXEC_ASK"] = "1"
 
 # Set terminal working directory for messaging platforms.
 # config.yaml terminal.cwd is the canonical source (bridged to TERMINAL_CWD
-# by the config bridge above).  When it's unset or a placeholder, default
-# to home directory.  MESSAGING_CWD is accepted as a backward-compat
-# fallback (deprecated — the warning above tells users to migrate).
+# by the config bridge above).  When it's unset, a placeholder, or points at
+# the Hermes install repo, default to MESSAGING_CWD or the profile workspace.
 _configured_cwd = os.environ.get("TERMINAL_CWD", "")
-if not _configured_cwd or _configured_cwd in (".", "auto", "cwd"):
-    _fallback = os.getenv("MESSAGING_CWD") or str(Path.home())
-    os.environ["TERMINAL_CWD"] = _fallback
+_install_root = Path(__file__).resolve().parents[1]
+_use_gateway_default_cwd = not _configured_cwd or _configured_cwd in (".", "auto", "cwd")
+if not _use_gateway_default_cwd:
+    try:
+        _candidate_cwd = Path(_configured_cwd).expanduser()
+        if not _candidate_cwd.is_absolute():
+            _candidate_cwd = Path.cwd() / _candidate_cwd
+        _use_gateway_default_cwd = _candidate_cwd.resolve() == _install_root
+    except Exception:
+        _use_gateway_default_cwd = False
+if _use_gateway_default_cwd:
+    _workspace_cwd = _hermes_home / "workspace"
+    messaging_cwd = os.getenv("MESSAGING_CWD") or (
+        str(_workspace_cwd) if _workspace_cwd.exists() else str(Path.home())
+    )
+    os.environ["TERMINAL_CWD"] = messaging_cwd
 
 from gateway.config import (
     Platform,

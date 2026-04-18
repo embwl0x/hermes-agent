@@ -35,6 +35,11 @@ _HINT_FILENAMES = [
 # Maximum chars per hint file to prevent context bloat
 _MAX_HINT_CHARS = 8_000
 
+# The installed Hermes source tree has its own AGENTS.md for Hermes development.
+# Normal agent chats often call helper scripts inside this tree; those paths
+# should not inject the repo's development guide into unrelated conversations.
+_HERMES_INSTALL_ROOT = Path(__file__).resolve().parents[1]
+
 # Tool argument keys that typically contain file paths
 _PATH_ARG_KEYS = {"path", "file_path", "workdir"}
 
@@ -44,6 +49,16 @@ _COMMAND_TOOLS = {"terminal"}
 # How many parent directories to walk up when looking for hints.
 # Prevents scanning all the way to / for deeply nested paths.
 _MAX_ANCESTOR_WALK = 5
+
+
+def _is_within(path: Path, parent: Path) -> bool:
+    try:
+        path.resolve().relative_to(parent.resolve())
+        return True
+    except ValueError:
+        return False
+    except OSError:
+        return False
 
 class SubdirectoryHintTracker:
     """Track which directories the agent visits and load hints on first access.
@@ -165,6 +180,8 @@ class SubdirectoryHintTracker:
         except OSError:
             return False
         if path in self._loaded_dirs:
+            return False
+        if _is_within(path, _HERMES_INSTALL_ROOT):
             return False
         return True
 

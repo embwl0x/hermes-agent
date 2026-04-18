@@ -131,12 +131,37 @@ def _run_async(coro):
 
 discover_builtin_tools()
 
-# MCP tool discovery (external MCP servers from config)
-try:
-    from tools.mcp_tool import discover_mcp_tools
-    discover_mcp_tools()
-except Exception as e:
-    logger.debug("MCP tool discovery failed: %s", e)
+_MCP_DISCOVERY_LOCK = threading.Lock()
+_MCP_DISCOVERY_DONE = False
+
+
+def _wants_no_mcp(toolsets: List[str] | None) -> bool:
+    return any(str(toolset).strip().lower() == "no_mcp" for toolset in (toolsets or []))
+
+
+def _strip_no_mcp(toolsets: List[str] | None) -> List[str] | None:
+    if toolsets is None:
+        return None
+    return [toolset for toolset in toolsets if str(toolset).strip().lower() != "no_mcp"]
+
+
+def _ensure_mcp_tools_discovered() -> None:
+    """Discover MCP tools lazily so normal no_mcp chats do not start servers."""
+    global _MCP_DISCOVERY_DONE, TOOL_TO_TOOLSET_MAP, TOOLSET_REQUIREMENTS
+    if _MCP_DISCOVERY_DONE:
+        return
+    with _MCP_DISCOVERY_LOCK:
+        if _MCP_DISCOVERY_DONE:
+            return
+        try:
+            from tools.mcp_tool import discover_mcp_tools
+            discover_mcp_tools()
+        except Exception as e:
+            logger.debug("MCP tool discovery failed: %s", e)
+        finally:
+            _MCP_DISCOVERY_DONE = True
+            TOOL_TO_TOOLSET_MAP = registry.get_tool_to_toolset_map()
+            TOOLSET_REQUIREMENTS = registry.get_toolset_requirements()
 
 # Plugin tool discovery (user/project/pip plugins)
 try:
@@ -213,6 +238,17 @@ def get_tool_definitions(
     """
     # Determine which tool names the caller wants
     tools_to_include: set = set()
+    explicit_toolsets = enabled_toolsets is not None
+    skip_mcp = (
+        explicit_toolsets
+        or _wants_no_mcp(enabled_toolsets)
+        or _wants_no_mcp(disabled_toolsets)
+    )
+    enabled_toolsets = _strip_no_mcp(enabled_toolsets)
+    disabled_toolsets = _strip_no_mcp(disabled_toolsets)
+
+    if not skip_mcp:
+        _ensure_mcp_tools_discovered()
 
     if enabled_toolsets is not None:
         for toolset_name in enabled_toolsets:

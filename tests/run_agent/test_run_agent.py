@@ -431,6 +431,86 @@ class TestGetMessagesUpToLastAssistant:
         assert result[0]["role"] == "user"
 
 
+class TestVolatileToolOutputCompaction:
+    def test_compacts_skills_and_mcp_discovery_outputs(self, agent):
+        messages = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call-skills",
+                        "function": {
+                            "name": "skills_list",
+                            "arguments": '{"category": "web"}',
+                        },
+                    },
+                    {
+                        "id": "call-skill-view",
+                        "function": {
+                            "name": "skill_view",
+                            "arguments": '{"name": "frontend", "file_path": "SKILL.md"}',
+                        },
+                    },
+                    {
+                        "id": "call-mcp",
+                        "function": {
+                            "name": "mcp_list_tools",
+                            "arguments": '{"query": "calendar"}',
+                        },
+                    },
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call-skills", "content": "s" * 1000},
+            {"role": "tool", "tool_call_id": "call-skill-view", "content": "v" * 1200},
+            {"role": "tool", "tool_call_id": "call-mcp", "content": "m" * 900},
+            {"role": "assistant", "content": "done"},
+        ]
+
+        compacted = agent._compact_volatile_tool_outputs(messages)
+
+        assert compacted == 3
+        assert "skills_list output for category 'web' cleared" in messages[1]["content"]
+        assert "skill_view output for 'frontend/SKILL.md' cleared" in messages[2]["content"]
+        assert "mcp_list_tools output for query 'calendar' cleared" in messages[3]["content"]
+        assert len(messages[1]["content"]) < 200
+        assert messages[1]["tool_name"] == "skills_list"
+        assert messages[2]["tool_name"] == "skill_view"
+        assert messages[3]["tool_name"] == "mcp_list_tools"
+
+    def test_keeps_general_tool_outputs(self, agent):
+        messages = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call-terminal",
+                        "function": {
+                            "name": "terminal",
+                            "arguments": '{"command": "pytest"}',
+                        },
+                    },
+                    {
+                        "id": "call-mcp-call",
+                        "function": {
+                            "name": "mcp_call_tool",
+                            "arguments": '{"tool_name": "mcp_calendar_search", "arguments": {}}',
+                        },
+                    },
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call-terminal", "content": "t" * 1000},
+            {"role": "tool", "tool_call_id": "call-mcp-call", "content": "r" * 1000},
+        ]
+
+        compacted = agent._compact_volatile_tool_outputs(messages)
+
+        assert compacted == 0
+        assert messages[1]["content"] == "t" * 1000
+        assert messages[2]["content"] == "r" * 1000
+
+
 class TestMaskApiKey:
     def test_none_returns_none(self, agent):
         assert agent._mask_api_key_for_logs(None) is None
@@ -697,6 +777,10 @@ class TestBuildSystemPrompt:
             ),
             patch("run_agent.get_toolset_for_tool", create=True, side_effect=toolset_map.get),
             patch("run_agent.build_skills_system_prompt", return_value="SKILLS_PROMPT") as mock_skills,
+            patch(
+                "hermes_cli.config.load_config",
+                return_value={"agent": {"skills_index_in_prompt": True}},
+            ),
             patch("run_agent.OpenAI"),
         ):
             agent = AIAgent(
@@ -712,6 +796,42 @@ class TestBuildSystemPrompt:
         assert "SKILLS_PROMPT" in prompt
         assert mock_skills.call_args.kwargs["available_tools"] == set(toolset_map)
         assert mock_skills.call_args.kwargs["available_toolsets"] == {"web", "skills"}
+
+    def test_skills_index_can_be_omitted_while_skills_tools_stay_loaded(self):
+        tools = _make_tool_defs("skills_list", "skill_view", "skill_manage")
+
+        with (
+            patch("run_agent.get_tool_definitions", return_value=tools),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.build_skills_system_prompt") as mock_skills,
+            patch(
+                "hermes_cli.config.load_config",
+                return_value={"agent": {"skills_index_in_prompt": False}},
+            ),
+            patch("run_agent.OpenAI"),
+        ):
+            agent = AIAgent(
+                api_key="test-k...7890",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+            prompt = agent._build_system_prompt()
+
+        mock_skills.assert_not_called()
+        assert {"skills_list", "skill_view", "skill_manage"} <= agent.valid_tool_names
+        assert "full skills index is not preloaded" in prompt
+
+    def test_install_repo_cwd_uses_profile_workspace_for_context(self, tmp_path, monkeypatch):
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.delenv("TERMINAL_CWD", raising=False)
+        monkeypatch.delenv("MESSAGING_CWD", raising=False)
+        monkeypatch.chdir(Path(run_agent.__file__).resolve().parent)
+
+        assert run_agent._resolve_prompt_context_cwd() == str(workspace)
 
 
 class TestToolUseEnforcementConfig:

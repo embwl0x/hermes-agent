@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import os
 import logging
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -29,6 +30,14 @@ logger = logging.getLogger(__name__)
 
 GLOBAL_CONFIG_PATH = Path.home() / ".honcho" / "config.json"
 HOST = "hermes"
+_HONCHO_ID_RE = re.compile(r"[^a-zA-Z0-9_-]+")
+
+
+def sanitize_honcho_id(value: str | None, fallback: str = HOST) -> str:
+    """Return a Honcho-safe identifier for workspaces and peers."""
+    raw = str(value or "").strip()
+    sanitized = _HONCHO_ID_RE.sub("-", raw).strip("-_")
+    return sanitized or fallback
 
 
 def resolve_active_host() -> str:
@@ -297,12 +306,12 @@ class HonchoClientConfig:
         timeout = _resolve_optional_float(os.environ.get("HONCHO_TIMEOUT"))
         return cls(
             host=resolved_host,
-            workspace_id=workspace_id,
+            workspace_id=sanitize_honcho_id(workspace_id),
             api_key=api_key,
             environment=os.environ.get("HONCHO_ENVIRONMENT", "production"),
             base_url=base_url,
             timeout=timeout,
-            ai_peer=resolved_host,
+            ai_peer=sanitize_honcho_id(resolved_host),
             enabled=bool(api_key or base_url),
         )
 
@@ -345,6 +354,8 @@ class HonchoClientConfig:
             or raw.get("aiPeer")
             or resolved_host
         )
+        workspace = sanitize_honcho_id(workspace)
+        ai_peer = sanitize_honcho_id(ai_peer)
         api_key = (
             host_block.get("apiKey")
             or raw.get("apiKey")

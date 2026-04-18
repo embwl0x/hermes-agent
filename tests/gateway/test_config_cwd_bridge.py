@@ -14,7 +14,13 @@ import json
 import pytest
 
 
-def _simulate_config_bridge(cfg: dict, initial_env: dict | None = None):
+def _simulate_config_bridge(
+    cfg: dict,
+    initial_env: dict | None = None,
+    *,
+    install_root: str | None = None,
+    profile_workspace: str | None = None,
+):
     """Simulate the gateway config bridge logic from gateway/run.py.
 
     Returns the resulting env dict (only TERMINAL_* and MESSAGING_CWD keys).
@@ -57,10 +63,13 @@ def _simulate_config_bridge(cfg: dict, initial_env: dict | None = None):
             if isinstance(alias_val, str) and alias_val.strip():
                 env[alias_env] = alias_val.strip()
 
-    # --- Replicate lines 144-147: MESSAGING_CWD fallback ---
+    # --- Replicate gateway cwd fallback / install-root guard ---
     configured_cwd = env.get("TERMINAL_CWD", "")
-    if not configured_cwd or configured_cwd in (".", "auto", "cwd"):
-        messaging_cwd = env.get("MESSAGING_CWD") or "/root"  # Path.home() for root
+    use_default_cwd = not configured_cwd or configured_cwd in (".", "auto", "cwd")
+    if not use_default_cwd and install_root:
+        use_default_cwd = configured_cwd == install_root
+    if use_default_cwd:
+        messaging_cwd = env.get("MESSAGING_CWD") or profile_workspace or "/root"  # Path.home() for root
         env["TERMINAL_CWD"] = messaging_cwd
 
     return env
@@ -150,6 +159,16 @@ class TestTopLevelCwdAlias:
         cfg = {"cwd": "/from/config"}
         result = _simulate_config_bridge(cfg, {"MESSAGING_CWD": "/from/env"})
         assert result["TERMINAL_CWD"] == "/from/config"
+
+    def test_install_root_cwd_uses_profile_workspace(self):
+        """The Hermes install repo should not become normal chat project context."""
+        cfg = {"terminal": {"cwd": "/opt/hermes-agent"}}
+        result = _simulate_config_bridge(
+            cfg,
+            install_root="/opt/hermes-agent",
+            profile_workspace="/home/hermes/.hermes/workspace",
+        )
+        assert result["TERMINAL_CWD"] == "/home/hermes/.hermes/workspace"
 
 
 class TestNestedTerminalCwdPlaceholderSkip:

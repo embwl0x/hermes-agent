@@ -8,7 +8,8 @@ from plugins.memory.honcho.session import (
     HonchoSession,
     HonchoSessionManager,
 )
-from plugins.memory.honcho import HonchoMemoryProvider
+import plugins.memory.honcho as honcho_module
+from plugins.memory.honcho import CONCLUDE_SCHEMA, HonchoMemoryProvider
 
 
 # ---------------------------------------------------------------------------
@@ -368,7 +369,6 @@ class TestPeerLookupHelpers:
 class TestConcludeToolDispatch:
     def test_conclude_schema_has_no_anyof(self):
         """anyOf/oneOf/allOf breaks Anthropic and Fireworks APIs — schema must be plain object."""
-        from plugins.memory.honcho import CONCLUDE_SCHEMA
         params = CONCLUDE_SCHEMA["parameters"]
         assert params["type"] == "object"
         assert "conclusion" in params["properties"]
@@ -376,6 +376,31 @@ class TestConcludeToolDispatch:
         assert "anyOf" not in params
         assert "oneOf" not in params
         assert "allOf" not in params
+
+    def test_provider_strips_legacy_top_level_combinators(self, monkeypatch):
+        """Provider output stays Codex-compatible even if an older schema shape is loaded."""
+        legacy = {
+            **CONCLUDE_SCHEMA,
+            "parameters": {
+                **CONCLUDE_SCHEMA["parameters"],
+                "anyOf": [{"required": ["conclusion"]}, {"required": ["delete_id"]}],
+                "oneOf": [],
+                "allOf": [],
+                "enum": [],
+                "not": {},
+            },
+        }
+        monkeypatch.setattr(honcho_module, "ALL_TOOL_SCHEMAS", [legacy])
+
+        provider = HonchoMemoryProvider()
+        params = provider.get_tool_schemas()[0]["parameters"]
+
+        assert params["type"] == "object"
+        assert "anyOf" not in params
+        assert "oneOf" not in params
+        assert "allOf" not in params
+        assert "enum" not in params
+        assert "not" not in params
 
     def test_honcho_conclude_defaults_to_user_peer(self):
         provider = HonchoMemoryProvider()

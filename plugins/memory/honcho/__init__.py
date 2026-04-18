@@ -15,6 +15,7 @@ Config: Uses the existing Honcho config chain:
 
 from __future__ import annotations
 
+from copy import deepcopy
 import json
 import logging
 import re
@@ -177,6 +178,21 @@ CONCLUDE_SCHEMA = {
 
 
 ALL_TOOL_SCHEMAS = [PROFILE_SCHEMA, SEARCH_SCHEMA, REASONING_SCHEMA, CONTEXT_SCHEMA, CONCLUDE_SCHEMA]
+_CODEX_TOP_LEVEL_SCHEMA_KEYS = ("anyOf", "oneOf", "allOf", "enum", "not")
+
+
+def _codex_compatible_tool_schema(schema: Dict[str, Any]) -> Dict[str, Any]:
+    """Return a defensive copy with Codex-safe top-level parameters."""
+    sanitized = deepcopy(schema)
+    params = sanitized.setdefault("parameters", {})
+    if not isinstance(params, dict):
+        sanitized["parameters"] = {"type": "object", "properties": {}}
+        return sanitized
+    params.setdefault("type", "object")
+    params.setdefault("properties", {})
+    for key in _CODEX_TOP_LEVEL_SCHEMA_KEYS:
+        params.pop(key, None)
+    return sanitized
 
 
 # ---------------------------------------------------------------------------
@@ -929,7 +945,7 @@ class HonchoMemoryProvider(MemoryProvider):
             return []
         if self._recall_mode == "context":
             return []
-        return list(ALL_TOOL_SCHEMAS)
+        return [_codex_compatible_tool_schema(schema) for schema in ALL_TOOL_SCHEMAS]
 
     def handle_tool_call(self, tool_name: str, args: dict, **kwargs) -> str:
         """Handle a Honcho tool call, with lazy session init for tools-only mode."""

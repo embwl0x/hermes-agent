@@ -104,6 +104,24 @@ class TestSubdirectoryHintTracker:
         assert result is not None
         assert "Frontend rules" in result
 
+    def test_terminal_command_ignores_installed_hermes_tree(self, tmp_path, monkeypatch):
+        """Helper scripts inside the Hermes install should not inject dev context."""
+        install_root = tmp_path / "hermes-agent"
+        scripts_dir = install_root / "scripts"
+        scripts_dir.mkdir(parents=True)
+        (install_root / "AGENTS.md").write_text("Hermes Agent - Development Guide")
+        (scripts_dir / "session_start.py").write_text("print('ok')")
+
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        monkeypatch.setattr("agent.subdirectory_hints._HERMES_INSTALL_ROOT", install_root)
+
+        tracker = SubdirectoryHintTracker(working_dir=str(workspace))
+        result = tracker.check_tool_call(
+            "terminal", {"command": f"python3 {scripts_dir / 'session_start.py'}"}
+        )
+        assert result is None
+
     def test_terminal_cd_command(self, project):
         """cd into a directory with hints."""
         tracker = SubdirectoryHintTracker(working_dir=str(project))

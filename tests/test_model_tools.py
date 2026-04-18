@@ -7,6 +7,7 @@ import pytest
 
 from model_tools import (
     handle_function_call,
+    get_tool_definitions,
     get_all_tool_names,
     get_toolset_for_tool,
     _AGENT_LOOP_TOOLS,
@@ -222,3 +223,44 @@ class TestBackwardCompat:
     def test_tool_to_toolset_map(self):
         assert isinstance(TOOL_TO_TOOLSET_MAP, dict)
         assert len(TOOL_TO_TOOLSET_MAP) > 0
+
+    def test_no_mcp_sentinel_skips_mcp_discovery(self):
+        with patch(
+            "model_tools._ensure_mcp_tools_discovered",
+            side_effect=AssertionError("MCP discovery should be skipped"),
+        ):
+            tools = get_tool_definitions(
+                enabled_toolsets=["web", "skills", "no_mcp"],
+                quiet_mode=True,
+            )
+
+        names = {tool["function"]["name"] for tool in tools}
+        assert "skills_list" in names
+        assert "skill_view" in names
+
+    def test_mcp_bridge_available_without_mcp_discovery(self):
+        with patch(
+            "model_tools._ensure_mcp_tools_discovered",
+            side_effect=AssertionError("MCP discovery should be skipped"),
+        ):
+            tools = get_tool_definitions(
+                enabled_toolsets=["mcp", "no_mcp"],
+                quiet_mode=True,
+            )
+
+        names = {tool["function"]["name"] for tool in tools}
+        assert "mcp_list_tools" in names
+        assert "mcp_call_tool" in names
+
+    def test_explicit_toolsets_skip_mcp_discovery(self):
+        with patch(
+            "model_tools._ensure_mcp_tools_discovered",
+            side_effect=AssertionError("MCP discovery should be skipped"),
+        ):
+            tools = get_tool_definitions(
+                enabled_toolsets=["memory", "skills"],
+                quiet_mode=True,
+            )
+
+        names = {tool["function"]["name"] for tool in tools}
+        assert "skills_list" in names

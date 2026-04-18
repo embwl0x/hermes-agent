@@ -11,7 +11,12 @@ import sys
 from pathlib import Path
 
 from hermes_constants import get_hermes_home
-from plugins.memory.honcho.client import resolve_active_host, resolve_config_path, HOST
+from plugins.memory.honcho.client import (
+    HOST,
+    resolve_active_host,
+    resolve_config_path,
+    sanitize_honcho_id,
+)
 
 
 def clone_honcho_for_profile(profile_name: str) -> bool:
@@ -58,8 +63,10 @@ def clone_honcho_for_profile(profile_name: str) -> bool:
     # see the same user context, sessions, and project history.
     # Use the bare profile name as the peer identity (not the host key)
     # because Honcho's peer ID pattern is ^[a-zA-Z0-9_-]+$ (no dots).
-    new_block["aiPeer"] = profile_name
-    new_block["workspace"] = default_block.get("workspace") or cfg.get("workspace") or HOST
+    new_block["aiPeer"] = sanitize_honcho_id(profile_name)
+    new_block["workspace"] = sanitize_honcho_id(
+        default_block.get("workspace") or cfg.get("workspace") or HOST
+    )
     new_block["enabled"] = default_block.get("enabled", True)
 
     cfg.setdefault("hosts", {})[new_host] = new_block
@@ -118,9 +125,12 @@ def cmd_enable(args) -> None:
         if peer_name and "peerName" not in block:
             block["peerName"] = peer_name
         # Use bare profile name as AI peer, not the host key
-        ai_peer = host.split(".", 1)[1] if "." in host else host
+        ai_peer = sanitize_honcho_id(host.split(".", 1)[1] if "." in host else host)
         block.setdefault("aiPeer", ai_peer)
-        block.setdefault("workspace", default_block.get("workspace") or cfg.get("workspace") or HOST)
+        block.setdefault(
+            "workspace",
+            sanitize_honcho_id(default_block.get("workspace") or cfg.get("workspace") or HOST),
+        )
 
     _write_config(cfg)
     print(f"  {label}Honcho enabled.")

@@ -106,7 +106,44 @@ from agent.trajectory import (
     convert_scratchpad_to_think, has_incomplete_scratchpad,
     save_trajectory as _save_trajectory_to_file,
 )
-from utils import atomic_json_write, env_var_enabled
+from utils import atomic_json_write, env_var_enabled, is_truthy_value
+
+
+def _default_context_cwd() -> str:
+    """Return a non-install workspace for prompt context discovery."""
+    messaging_cwd = os.getenv("MESSAGING_CWD", "").strip()
+    if messaging_cwd:
+        return messaging_cwd
+
+    workspace = get_hermes_home() / "workspace"
+    if workspace.exists():
+        return str(workspace)
+    return str(Path.home())
+
+
+def _path_is_install_root(path: str | Path) -> bool:
+    try:
+        candidate = Path(path).expanduser()
+        if not candidate.is_absolute():
+            candidate = Path.cwd() / candidate
+        return candidate.resolve() == Path(__file__).resolve().parent
+    except Exception:
+        return False
+
+
+def _resolve_prompt_context_cwd(raw_cwd: str | None = None) -> str | None:
+    """Avoid injecting the Hermes repo's own AGENTS.md into normal chats."""
+    value = raw_cwd if raw_cwd is not None else os.getenv("TERMINAL_CWD")
+    configured = str(value or "").strip()
+
+    if configured and configured not in (".", "auto", "cwd"):
+        if _path_is_install_root(configured):
+            return _default_context_cwd()
+        return configured
+
+    if _path_is_install_root(Path.cwd()):
+        return _default_context_cwd()
+    return None
 
 
 
@@ -232,6 +269,15 @@ _PARALLEL_SAFE_TOOLS = frozenset({
 
 # File tools can run concurrently when they target independent paths.
 _PATH_SCOPED_TOOLS = frozenset({"read_file", "write_file", "patch"})
+
+# Tool outputs that are useful only for choosing what to load/call next.
+# Once a turn has completed, future turns can reload them cheaply instead of
+# carrying their full output forever.
+_VOLATILE_DISCOVERY_TOOLS = frozenset({
+    "skills_list",
+    "skill_view",
+    "mcp_list_tools",
+})
 
 # Maximum number of concurrent worker threads for parallel tool execution.
 _MAX_TOOL_WORKERS = 8
@@ -1414,6 +1460,10 @@ class AIAgent:
         if not isinstance(_agent_section, dict):
             _agent_section = {}
         self._tool_use_enforcement = _agent_section.get("tool_use_enforcement", "auto")
+        self._skills_index_in_prompt = is_truthy_value(
+            _agent_section.get("skills_index_in_prompt", True),
+            default=True,
+        )
 
         # Initialize context compressor for automatic context management
         # Compresses conversation when approaching model's context limit
@@ -2655,6 +2705,104 @@ class AIAgent:
         
         # Return everything up to (not including) the last assistant message
         return messages[:last_assistant_idx]
+
+    @staticmethod
+    def _tool_call_index(messages: List[Dict]) -> Dict[str, tuple[str, Dict[str, Any]]]:
+        """Return tool_call_id -> (tool_name, parsed_args) for a message list."""
+        index: Dict[str, tuple[str, Dict[str, Any]]] = {}
+        for msg in messages or []:
+            if not isinstance(msg, dict) or msg.get("role") != "assistant":
+                continue
+            for tc in msg.get("tool_calls") or []:
+                if isinstance(tc, dict):
+                    call_id = str(tc.get("id") or "")
+                    fn = tc.get("function") or {}
+                    name = str(fn.get("name") or "")
+                    raw_args = fn.get("arguments") or "{}"
+                else:
+                    call_id = str(getattr(tc, "id", "") or "")
+                    fn = getattr(tc, "function", None)
+                    name = str(getattr(fn, "name", "") or "")
+                    raw_args = getattr(fn, "arguments", "{}") or "{}"
+                if not call_id:
+                    continue
+                if isinstance(raw_args, dict):
+                    args = raw_args
+                else:
+                    try:
+                        args = json.loads(raw_args) if raw_args else {}
+                    except (json.JSONDecodeError, TypeError):
+                        args = {}
+                index[call_id] = (name, args if isinstance(args, dict) else {})
+        return index
+
+    @staticmethod
+    def _volatile_tool_placeholder(tool_name: str, args: Dict[str, Any], original_len: int) -> str:
+        """Build a small reload hint for a cleared discovery tool result."""
+        if tool_name == "skills_list":
+            category = str(args.get("category") or "").strip()
+            scoped = f" for category '{category}'" if category else ""
+            return (
+                f"[skills_list output{scoped} cleared after use to save context "
+                f"({original_len:,} chars). Call skills_list again if the current skill index is needed.]"
+            )
+        if tool_name == "skill_view":
+            name = str(args.get("name") or "").strip() or "unknown"
+            file_path = str(args.get("file_path") or "").strip()
+            target = f"{name}/{file_path}" if file_path else name
+            return (
+                f"[skill_view output for '{target}' cleared after use to save context "
+                f"({original_len:,} chars). Call skill_view again if those instructions are needed.]"
+            )
+        if tool_name == "mcp_list_tools":
+            query = str(args.get("query") or "").strip()
+            scoped = f" for query '{query[:80]}'" if query else ""
+            return (
+                f"[mcp_list_tools output{scoped} cleared after use to save context "
+                f"({original_len:,} chars). Call mcp_list_tools again if MCP discovery is needed.]"
+            )
+        return f"[{tool_name} output cleared after use to save context ({original_len:,} chars).]"
+
+    def _compact_volatile_tool_outputs(self, messages: List[Dict]) -> int:
+        """Replace stale skills/MCP discovery outputs with tiny reload hints.
+
+        Current turns still get full tool outputs. This runs on restored
+        history and after a completed turn so one-time discovery payloads do
+        not keep bloating future prompts.
+        """
+        if not messages:
+            return 0
+        call_index = self._tool_call_index(messages)
+        compacted = 0
+        for msg in messages:
+            if not isinstance(msg, dict) or msg.get("role") != "tool":
+                continue
+            content = msg.get("content")
+            if not isinstance(content, str) or not content:
+                continue
+            if (
+                content.startswith("[skills_list output")
+                or content.startswith("[skill_view output")
+                or content.startswith("[mcp_list_tools output")
+            ):
+                continue
+
+            tool_name = str(msg.get("tool_name") or "")
+            args: Dict[str, Any] = {}
+            call_id = str(msg.get("tool_call_id") or "")
+            if not tool_name:
+                tool_name, args = call_index.get(call_id, ("", {}))
+            else:
+                _, args = call_index.get(call_id, (tool_name, {}))
+
+            if tool_name not in _VOLATILE_DISCOVERY_TOOLS:
+                continue
+            if len(content) < 400:
+                continue
+            msg["content"] = self._volatile_tool_placeholder(tool_name, args, len(content))
+            msg["tool_name"] = tool_name
+            compacted += 1
+        return compacted
     
     def _format_tools_for_system_message(self) -> str:
         """
@@ -3606,7 +3754,7 @@ class AIAgent:
                 pass
 
         has_skills_tools = any(name in self.valid_tool_names for name in ['skills_list', 'skill_view', 'skill_manage'])
-        if has_skills_tools:
+        if has_skills_tools and self._skills_index_in_prompt:
             avail_toolsets = {
                 toolset
                 for toolset in (
@@ -3622,13 +3770,27 @@ class AIAgent:
             skills_prompt = ""
         if skills_prompt:
             prompt_parts.append(skills_prompt)
+        elif has_skills_tools:
+            prompt_parts.append(
+                "Skills are available through skills_list and skill_view, but the full skills index is not preloaded. "
+                "For specialized tasks, unfamiliar domains, or workflows that may have local instructions, call skills_list first, "
+                "then skill_view for the relevant skill before using it."
+            )
+
+        has_mcp_bridge_tools = any(name in self.valid_tool_names for name in ['mcp_list_tools', 'mcp_call_tool'])
+        if has_mcp_bridge_tools:
+            prompt_parts.append(
+                "MCP servers are available on demand through mcp_list_tools and mcp_call_tool, but MCP server schemas are not preloaded. "
+                "For MCP-specific tasks, external integrations, or capabilities not covered by the visible tools, call mcp_list_tools first, "
+                "then mcp_call_tool for the exact MCP tool you need."
+            )
 
         if not self.skip_context_files:
             # Use TERMINAL_CWD for context file discovery when set (gateway
             # mode).  The gateway process runs from the hermes-agent install
             # dir, so os.getcwd() would pick up the repo's AGENTS.md and
             # other dev files — inflating token usage by ~10k for no benefit.
-            _context_cwd = os.getenv("TERMINAL_CWD") or None
+            _context_cwd = _resolve_prompt_context_cwd()
             context_files_prompt = build_context_files_prompt(
                 cwd=_context_cwd, skip_soul=_soul_loaded)
             if context_files_prompt:
@@ -8572,8 +8734,12 @@ class AIAgent:
             _msg_preview,
         )
 
-        # Initialize conversation (copy to avoid mutating the caller's list)
-        messages = list(conversation_history) if conversation_history else []
+        # Initialize conversation (copy to avoid mutating the caller's list).
+        # Discovery outputs are compacted before the first API call so older
+        # sessions do not keep paying for stale skills/MCP listings.
+        messages = [m.copy() if isinstance(m, dict) else m for m in conversation_history] if conversation_history else []
+        if messages:
+            self._compact_volatile_tool_outputs(messages)
 
         # Hydrate todo store from conversation history (gateway creates a fresh
         # AIAgent per message, so the in-memory store is empty -- we need to
@@ -11471,6 +11637,11 @@ class AIAgent:
 
         # Clean up VM and browser for this task after conversation completes
         self._cleanup_task_resources(effective_task_id)
+
+        # After the model has produced its final answer, unload bulky
+        # one-time discovery outputs from future turns. The model can reload
+        # skills/MCP listings when it needs them again.
+        self._compact_volatile_tool_outputs(messages)
 
         # Persist session to both JSON log and SQLite
         self._persist_session(messages, conversation_history)
