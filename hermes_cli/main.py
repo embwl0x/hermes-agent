@@ -45,6 +45,7 @@ Usage:
 
 import argparse
 import os
+import signal
 import shutil
 import subprocess
 import sys
@@ -4951,6 +4952,54 @@ def _install_python_dependencies_with_optional_fallback(
         )
 
 
+def _node_install_timeout_seconds() -> float:
+    raw = os.getenv("HERMES_NPM_INSTALL_TIMEOUT_SECONDS", "600").strip()
+    try:
+        timeout = float(raw)
+    except ValueError:
+        timeout = 600.0
+    return max(timeout, 30.0)
+
+
+def _run_npm_install(npm: str, path: Path, timeout_seconds: float):
+    cmd = [npm, "install", "--silent", "--no-fund", "--no-audit", "--progress=false"]
+    kwargs = {
+        "cwd": path,
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.PIPE,
+        "text": True,
+    }
+    if os.name != "nt":
+        kwargs["start_new_session"] = True
+
+    process = subprocess.Popen(cmd, **kwargs)
+    try:
+        stdout, stderr = process.communicate(timeout=timeout_seconds)
+        return process.returncode, stdout, stderr, False
+    except subprocess.TimeoutExpired as exc:
+        if os.name != "nt":
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+        else:
+            process.terminate()
+
+        try:
+            stdout, stderr = process.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            if os.name != "nt":
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            else:
+                process.kill()
+            stdout, stderr = process.communicate()
+
+        return 124, stdout or exc.stdout or "", stderr or exc.stderr or "", True
+
+
 def _update_node_dependencies() -> None:
     npm = shutil.which("npm")
     if not npm:
@@ -4964,23 +5013,28 @@ def _update_node_dependencies() -> None:
         return
 
     print("→ Updating Node.js dependencies...")
+    timeout_seconds = _node_install_timeout_seconds()
     for label, path in paths:
         if not (path / "package.json").exists():
             continue
 
-        result = subprocess.run(
-            [npm, "install", "--silent", "--no-fund", "--no-audit", "--progress=false"],
-            cwd=path,
-            capture_output=True,
-            text=True,
-            check=False,
+        returncode, _stdout, stderr, timed_out = _run_npm_install(
+            npm, path, timeout_seconds
         )
-        if result.returncode == 0:
+        if returncode == 0:
             print(f"  ✓ {label}")
             continue
 
+        if timed_out:
+            print(
+                f"  ⚠ npm install timed out in {label} "
+                f"after {timeout_seconds:g}s"
+            )
+            print("    Continuing update; run npm install manually if browser tools fail.")
+            continue
+
         print(f"  ⚠ npm install failed in {label}")
-        stderr = (result.stderr or "").strip()
+        stderr = (stderr or "").strip()
         if stderr:
             print(f"    {stderr.splitlines()[-1]}")
 
