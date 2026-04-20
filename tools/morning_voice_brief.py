@@ -29,7 +29,6 @@ from zoneinfo import ZoneInfo
 HERMES_ROOT = Path(os.environ.get("HERMES_ROOT", Path.home() / ".hermes"))
 TOOLS_DIR = HERMES_ROOT / "hermes-agent" / "tools"
 VENV_PYTHON = HERMES_ROOT / "hermes-agent" / "venv" / "bin" / "python"
-VOICE_BRIEFS_DIR = Path(os.environ.get("MORNING_VOICE_BRIEFS_DIR", HERMES_ROOT / "briefs" / "voice"))
 CORRECTIONS_FILE = HERMES_ROOT / "corrections" / "corrections.jsonl"
 GROWTH_LOG = HERMES_ROOT / "personality" / "growth-log.jsonl"
 IMPROVEMENT_REPORTS = HERMES_ROOT / "improvement-reports"
@@ -78,6 +77,11 @@ def _get_target_chat_id() -> str:
         or os.getenv("HERMES_SESSION_CHAT_ID")
         or JOE_CHAT_ID
     )
+
+
+def _get_voice_briefs_dir() -> Path:
+    """Resolve the voice briefs directory at call time."""
+    return Path(os.environ.get("MORNING_VOICE_BRIEFS_DIR", HERMES_ROOT / "briefs" / "voice"))
 
 
 def _load_overnight_highlights() -> list[str]:
@@ -180,10 +184,11 @@ def compose_voice_text(now: datetime) -> str:
 
 def generate_voice_file(text: str) -> Path | None:
     """Generate .ogg voice file via TTS tool."""
-    VOICE_BRIEFS_DIR.mkdir(parents=True, exist_ok=True)
+    voice_briefs_dir = _get_voice_briefs_dir()
+    voice_briefs_dir.mkdir(parents=True, exist_ok=True)
     today = datetime.now(EST).strftime("%Y-%m-%d")
-    output_path = VOICE_BRIEFS_DIR / f"morning-brief-{today}.ogg"
-    mp3_path = VOICE_BRIEFS_DIR / f"morning-brief-{today}.mp3"
+    output_path = voice_briefs_dir / f"morning-brief-{today}.ogg"
+    mp3_path = voice_briefs_dir / f"morning-brief-{today}.mp3"
 
     for stale_path in (output_path, mp3_path):
         try:
@@ -283,8 +288,9 @@ def run_offline_check() -> dict:
     """Validate local voice brief plumbing without network TTS or Telegram send."""
     now = datetime.now(EST)
     text = compose_voice_text(now)
-    VOICE_BRIEFS_DIR.mkdir(parents=True, exist_ok=True)
-    probe = VOICE_BRIEFS_DIR / ".morning-voice-write-check"
+    voice_briefs_dir = _get_voice_briefs_dir()
+    voice_briefs_dir.mkdir(parents=True, exist_ok=True)
+    probe = voice_briefs_dir / ".morning-voice-write-check"
     writable = False
     try:
         probe.write_text("ok", encoding="utf-8")
@@ -299,7 +305,7 @@ def run_offline_check() -> dict:
     return {
         "timestamp": now.isoformat(),
         "text_chars": len(text),
-        "voice_briefs_dir": str(VOICE_BRIEFS_DIR),
+        "voice_briefs_dir": str(voice_briefs_dir),
         "voice_briefs_dir_writable": writable,
         "telegram_token_configured": bool(_get_bot_token()),
         "tts": "skipped-offline-check",
@@ -345,7 +351,29 @@ def self_test() -> bool:
     passed += 1
     print("  ✅ _get_bot_token: no crash")
 
-    print(f"\n✅ All {passed}/5 tests passed.")
+    # Test 6: offline check honors MORNING_VOICE_BRIEFS_DIR and cleans probe
+    with tempfile.TemporaryDirectory() as tmpdir:
+        expected_dir = Path(tmpdir) / "voice-briefs"
+        previous_env = os.environ.get("MORNING_VOICE_BRIEFS_DIR")
+        try:
+            os.environ["MORNING_VOICE_BRIEFS_DIR"] = str(expected_dir)
+            offline = run_offline_check()
+            probe = expected_dir / ".morning-voice-write-check"
+            assert offline["voice_briefs_dir"] == str(expected_dir)
+            assert offline["voice_briefs_dir_writable"] is True
+            assert offline["text_chars"] > 0
+            assert offline["tts"] == "skipped-offline-check"
+            assert offline["sent"] is False
+            assert not probe.exists()
+            passed += 1
+            print("  ✅ run_offline_check: env dir, probe cleanup, offline-only")
+        finally:
+            if previous_env is None:
+                os.environ.pop("MORNING_VOICE_BRIEFS_DIR", None)
+            else:
+                os.environ["MORNING_VOICE_BRIEFS_DIR"] = previous_env
+
+    print(f"\n✅ All {passed}/6 tests passed.")
     return True
 
 
