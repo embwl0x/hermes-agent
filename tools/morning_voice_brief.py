@@ -26,7 +26,11 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-HERMES_ROOT = Path(os.environ.get("HERMES_ROOT", Path.home() / ".hermes"))
+HERMES_ROOT = Path(
+    os.environ.get("HERMES_ROOT")
+    or os.environ.get("HERMES_HOME")
+    or (Path.home() / ".hermes")
+)
 TOOLS_DIR = HERMES_ROOT / "hermes-agent" / "tools"
 VENV_PYTHON = HERMES_ROOT / "hermes-agent" / "venv" / "bin" / "python"
 CORRECTIONS_FILE = HERMES_ROOT / "corrections" / "corrections.jsonl"

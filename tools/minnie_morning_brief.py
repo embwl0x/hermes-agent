@@ -24,7 +24,11 @@ sys.path.insert(0, str((Path(__file__).resolve().parent)))
 from steering_runtime import load_runtime_steering, steering_behavior_lines, steering_summary_line
 
 # --- Paths ---
-HERMES_ROOT = Path(os.environ.get("HERMES_ROOT", Path.home() / ".hermes"))
+HERMES_ROOT = Path(
+    os.environ.get("HERMES_ROOT")
+    or os.environ.get("HERMES_HOME")
+    or (Path.home() / ".hermes")
+)
 TOOLS_DIR = HERMES_ROOT / "hermes-agent" / "tools"
 VENV_PYTHON = HERMES_ROOT / "hermes-agent" / "venv" / "bin" / "python"
 DAILY_NOTES_DIR = HERMES_ROOT / "daily-notes"
